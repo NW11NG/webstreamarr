@@ -1,0 +1,20 @@
+{
+  "name": "m3u-channel-manager",
+  "version": "1.0.0",
+  "description": "M3U Channel Manager with VPN support",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "nodemon backend/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "puppeteer": "^22.8.2",
+    "sqlite3": "^5.1.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+} 

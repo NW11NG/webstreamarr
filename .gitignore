@@ -1,0 +1,4 @@
+node_modules/
+channels.db
+*.log
+.DS_Store 

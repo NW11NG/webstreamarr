@@ -1,0 +1,31 @@
+services:
+  webstreamarr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - DATABASE_PATH=/app/data/channels.db
+    ports:
+      - 34001:34001
+    restart: unless-stopped 
+    
+#For Gluetun application see below (MAKE SURE YOU OPEN THE PORTS IN GLUETUN
+
+#services:
+#  webstreamarr:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    volumes:
+#      - ./data:/app/data/
+#    environment:
+#      - NODE_ENV=production
+#      - DATABASE_PATH=/app/data/channels.db
+#    network_mode: "service:gluetun"
+#    depends_on:
+#      gluetun:
+#        condition: service_healthy
+#    restart: unless-stopped 
