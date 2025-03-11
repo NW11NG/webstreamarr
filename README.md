@@ -2,7 +2,12 @@
 
 A web-based application for scraping and managing M3U channels with custom headers. This application allows you to store and manage M3U URLs along with their associated headers (User-Agent, Referer, Origin) and channel icons.
 
-DESIGNED FOR THREADFIN - might work on other stuff dunno
+## DESIGNED FOR THREADFIN - might work on other stuff dunno
+## Just use the compose
+## Probally wont be maintained
+## Someone fix HLS/ts scraping and i will love you forever - Got as far as pulling the blob:websiteaddress but nothing else
+
+
 
 ## Features
 
