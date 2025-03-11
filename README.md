@@ -2,6 +2,11 @@
 
 A web-based application for scraping and managing M3U channels with custom headers. This application allows you to store and manage M3U URLs along with their associated headers (User-Agent, Referer, Origin) and channel icons.
 
+## I probably won't maintain this, it works mostly but has issues with his blob storage streams. if you fix it your a legend
+
+## For users with threadfin -might work with other stuff. dunno
+
+
 ## Features
 
 - Scrape website for m3u link and associated headers
