@@ -4,7 +4,7 @@ A web-based application for scraping and managing M3U channels with custom heade
 
 ## I probably won't maintain this, it works mostly but has issues with his blob storage streams. if you fix it your a legend
 
-## For users with threadfin -might work with other stuff. dunno
+## For user with threadfin - might work with other stuff tho
 
 
 ## Features
