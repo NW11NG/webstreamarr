@@ -1,0 +1,20 @@
+/* Custom styles */
+input {
+    border: 1px solid #e2e8f0;
+    padding: 0.5rem;
+}
+
+.channel-card {
+    transition: transform 0.2s;
+}
+
+.channel-card:hover {
+    transform: translateY(-2px);
+}
+
+.channel-icon {
+    width: 100px;
+    height: 100px;
+    object-fit: contain;
+    margin: 0 auto;
+} 

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebStreamarr</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .channel-icon {
+            width: 120px;
+            height: 70px;
+            object-fit: contain;
+            margin: 0 auto;
+        }
+        .form-section {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #1a202c;
+            margin-bottom: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .input-group {
+            margin-bottom: 1rem;
+        }
+        .input-label {
+            display: block;
+            font-weight: 500;
+            color: #4a5568;
+            margin-bottom: 0.5rem;
+        }
+        .input-field {
+            width: 100%;
+            padding: 0.5rem;
+            border: 1px solid #e2e8f0;
+            border-radius: 0.375rem;
+            transition: border-color 0.2s;
+        }
+        .input-field:focus {
+            outline: none;
+            border-color: #4299e1;
+            box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
+        }
+        .button-primary {
+            background-color: #4299e1;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        .button-primary:hover {
+            background-color: #3182ce;
+        }
+        .channel-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+        .channel-card {
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .channel-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .relative {
+            position: relative;
+        }
+        #streamLoading {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <!-- Add Playlist URL Section -->
+        <div class="bg-white rounded-lg shadow p-4 mb-8">
+            <h2 class="text-lg font-semibold text-gray-900 mb-2">Playlist URL for Threadfin/Plex</h2>
+            <div class="flex items-center space-x-2">
+                <input type="text" id="playlistUrl" readonly 
+                    class="flex-1 bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg p-2.5"
+                    value="">
+                <button onclick="copyPlaylistUrl()" 
+                    class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors">
+                    Copy URL
+                </button>
+                <a href="/api/playlist.m3u" target="_blank"
+                    class="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors">
+                    Download M3U
+                </a>
+                <button onclick="resequenceChannels()" 
+                    class="bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 transition-colors flex items-center">
+                    <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"></path>
+                    </svg>
+                    Resequence IDs
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Forms Section -->
+            <div class="lg:col-span-1 space-y-8">
+                <!-- Auto-detect Form -->
+                <div class="form-section p-6">
+                    <h2 class="section-title">Auto-detect Channel</h2>
+                    <form id="autoDetectForm" class="space-y-4">
+                        <div class="input-group">
+                            <label class="input-label" for="webpage_url">Stream Webpage URL</label>
+                            <input type="url" id="webpage_url" class="input-field" required placeholder="Enter the webpage URL containing the stream">
+                        </div>
+                        <button type="submit" class="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600 transition-colors flex items-center justify-center">
+                            <span id="autoDetectButtonText">Auto-detect Stream</span>
+                            <div id="autoDetectSpinner" class="hidden ml-2 animate-spin rounded-full h-4 w-4 border-2 border-white"></div>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Channel Form -->
+                <div class="form-section p-6">
+                    <h2 class="section-title">Add Channel</h2>
+                    <form id="channelForm" class="space-y-4">
+                        <div class="input-group">
+                            <label class="input-label" for="name">Channel Name</label>
+                            <input type="text" id="name" class="input-field" required>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="m3u_url">M3U URL</label>
+                            <input type="url" id="m3u_url" class="input-field" required>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="icon_url">Icon URL</label>
+                            <input type="url" id="icon_url" class="input-field">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="saved_user_agents">Saved User Agents</label>
+                            <select id="saved_user_agents" class="input-field"></select>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="user_agent">User Agent</label>
+                            <input type="text" id="user_agent" class="input-field">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="referer">Referer</label>
+                            <input type="url" id="referer" class="input-field">
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="origin">Origin</label>
+                            <input type="url" id="origin" class="input-field">
+                        </div>
+                        <button type="submit" class="button-primary w-full">Add Channel</button>
+                    </form>
+                </div>
+
+                <!-- User Agent Form -->
+                <div class="form-section p-6">
+                    <h2 class="section-title">Add User Agent</h2>
+                    <form id="userAgentForm" class="space-y-4">
+                        <div class="input-group">
+                            <label class="input-label" for="ua_nickname">Nickname</label>
+                            <input type="text" id="ua_nickname" class="input-field" required>
+                        </div>
+                        <div class="input-group">
+                            <label class="input-label" for="ua_string">User Agent String</label>
+                            <input type="text" id="ua_string" class="input-field" required>
+                        </div>
+                        <button type="submit" class="button-primary w-full">Add User Agent</button>
+                    </form>
+                </div>
+
+                <!-- User Agents List -->
+                <div class="form-section p-6">
+                    <h2 class="section-title">Saved User Agents</h2>
+                    <div id="userAgentList" class="space-y-2"></div>
+                </div>
+            </div>
+
+            <!-- Channels Grid -->
+            <div class="lg:col-span-2">
+                <div class="form-section p-6">
+                    <h2 class="section-title">Channels</h2>
+                    <div id="channelList" class="channel-grid"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // Set the playlist URL when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            const playlistUrl = `${window.location.origin}/api/playlist.m3u`;
+            document.getElementById('playlistUrl').value = playlistUrl;
+        });
+
+        // Copy URL function
+        function copyPlaylistUrl() {
+            const urlInput = document.getElementById('playlistUrl');
+            urlInput.select();
+            document.execCommand('copy');
+            
+            // Show feedback
+            const button = event.target.closest('button');
+            const originalText = button.textContent;
+            button.textContent = 'Copied!';
+            setTimeout(() => {
+                button.textContent = originalText;
+            }, 2000);
+        }
+    </script>
+</body>
+</html> 
