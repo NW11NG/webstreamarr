@@ -91,7 +91,7 @@ const processStream = async (url, headers, res) => {
     '-rw_timeout', '30000000',
     '-analyzeduration', '5000000',
     '-probesize', '5000000',
-    '-fflags', '+genpts+igndts+nobuffer',
+    '-fflags', '+genpts+igndts+flush_packets',
     '-flags', '+low_delay',
     '-avioflags', 'direct',
     '-protocol_whitelist', 'file,https,tls,tcp,crypto'
@@ -123,11 +123,31 @@ const processStream = async (url, headers, res) => {
 
   ffmpegArgs.push(
     '-i', url,
-    '-c', 'copy',
-    '-f', 'mpegts',
+    // Video transcoding settings for maximum compatibility
+    '-c:v', 'libx264',        // Use H.264 codec
+    '-preset', 'veryfast',    // Fast encoding
+    '-tune', 'zerolatency',   // Minimize latency
+    '-profile:v', 'high',     // High quality profile
+    '-level', '4.1',          // Modern devices support this level
+    '-maxrate', '5000k',      // Increased maximum bitrate
+    '-bufsize', '10000k',     // Increased buffer size
+    '-crf', '18',            // Constant Rate Factor (18 is visually lossless)
+    '-pix_fmt', 'yuv420p',    // Most compatible pixel format
+    '-g', '60',               // Keyframe interval
+    '-sc_threshold', '0',     // Disable scene change detection
+    '-x264opts', 'rc-lookahead=60:ref=4', // Better quality settings
+    // Audio transcoding settings
+    '-c:a', 'aac',            // Use AAC codec
+    '-b:a', '192k',           // Higher audio bitrate
+    '-ar', '48000',           // Higher audio sample rate
+    '-ac', '2',               // Stereo audio
+    '-aac_coder', 'twoloop',  // Higher quality AAC encoding
+    // Output format settings
+    '-f', 'mpegts',           // Use MPEG-TS format
+    '-movflags', '+faststart',
     '-max_delay', '500000',
     '-max_interleave_delta', '0',
-    '-max_muxing_queue_size', '1024',
+    '-max_muxing_queue_size', '4096',
     'pipe:1'
   );
 
@@ -197,40 +217,122 @@ function cleanupStream(ffmpeg) {
   }
 
   try {
-    // Try graceful shutdown first
-    if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
-      ffmpeg.stdin.end();
-    }
-    if (ffmpeg.stdout && !ffmpeg.stdout.destroyed) {
-      ffmpeg.stdout.destroy();
-    }
-    if (ffmpeg.stderr && !ffmpeg.stderr.destroyed) {
-      ffmpeg.stderr.destroy();
-    }
-
-    // Try to kill the process if it exists
-    if (ffmpeg.pid && !ffmpeg.killed) {
-      ffmpeg.kill('SIGTERM');
-      
-      // Force kill after 2 seconds if still running
-      setTimeout(() => {
+    console.log('Starting stream cleanup for process:', ffmpeg.pid);
+    
+    // Track cleanup status
+    let cleanupComplete = false;
+    const cleanupTimeout = setTimeout(() => {
+      if (!cleanupComplete) {
+        console.log('Cleanup taking too long, forcing process termination');
         try {
           if (ffmpeg.pid && !ffmpeg.killed) {
             process.kill(ffmpeg.pid, 'SIGKILL');
           }
-        } catch (killError) {
-          console.log('Process already terminated');
+        } catch (e) {
+          console.log('Force kill failed:', e.message);
         }
-      }, 2000);
+      }
+    }, 5000); // Force cleanup after 5 seconds
+
+    // Force close any open file descriptors
+    if (ffmpeg.stdio) {
+      ffmpeg.stdio.forEach((stream, index) => {
+        if (stream && !stream.destroyed) {
+          try {
+            stream.destroy();
+            console.log(`Closed stdio stream ${index}`);
+          } catch (e) {
+            console.log(`Error destroying stdio stream ${index}:`, e.message);
+          }
+        }
+      });
     }
 
-    // Remove all event listeners if they exist
-    if (ffmpeg.stdout) ffmpeg.stdout.removeAllListeners();
-    if (ffmpeg.stderr) ffmpeg.stderr.removeAllListeners();
-    if (ffmpeg.removeAllListeners) ffmpeg.removeAllListeners();
+    // Try graceful shutdown first
+    if (ffmpeg.stdin && !ffmpeg.stdin.destroyed) {
+      try {
+        ffmpeg.stdin.end();
+        ffmpeg.stdin.destroy();
+        console.log('Closed stdin');
+      } catch (e) {
+        console.log('Error closing stdin:', e.message);
+      }
+    }
+    
+    if (ffmpeg.stdout && !ffmpeg.stdout.destroyed) {
+      try {
+        ffmpeg.stdout.unpipe();
+        ffmpeg.stdout.destroy();
+        console.log('Closed stdout');
+      } catch (e) {
+        console.log('Error closing stdout:', e.message);
+      }
+    }
+    
+    if (ffmpeg.stderr && !ffmpeg.stderr.destroyed) {
+      try {
+        ffmpeg.stderr.destroy();
+        console.log('Closed stderr');
+      } catch (e) {
+        console.log('Error closing stderr:', e.message);
+      }
+    }
 
+    // Try to kill the process if it exists
+    if (ffmpeg.pid && !ffmpeg.killed) {
+      try {
+        // Send SIGTERM first for graceful shutdown
+        ffmpeg.kill('SIGTERM');
+        console.log('Sent SIGTERM to process');
+        
+        // Force kill after 2 seconds if still running
+        setTimeout(() => {
+          try {
+            if (ffmpeg.pid && !ffmpeg.killed) {
+              process.kill(ffmpeg.pid, 'SIGKILL');
+              console.log('Force killed FFmpeg process:', ffmpeg.pid);
+            }
+          } catch (killError) {
+            console.log('Process already terminated');
+          }
+        }, 2000);
+      } catch (e) {
+        console.log('Error killing process:', e.message);
+        // Try force kill if SIGTERM fails
+        try {
+          if (ffmpeg.pid && !ffmpeg.killed) {
+            process.kill(ffmpeg.pid, 'SIGKILL');
+            console.log('Force killed FFmpeg process after SIGTERM failed');
+          }
+        } catch (killError) {
+          console.log('Force kill failed:', killError.message);
+        }
+      }
+    }
+
+    // Remove all event listeners
+    try {
+      if (ffmpeg.stdout) {
+        ffmpeg.stdout.removeAllListeners();
+        console.log('Removed stdout listeners');
+      }
+      if (ffmpeg.stderr) {
+        ffmpeg.stderr.removeAllListeners();
+        console.log('Removed stderr listeners');
+      }
+      if (ffmpeg.removeAllListeners) {
+        ffmpeg.removeAllListeners();
+        console.log('Removed process listeners');
+      }
+    } catch (e) {
+      console.log('Error removing listeners:', e.message);
+    }
+
+    cleanupComplete = true;
+    clearTimeout(cleanupTimeout);
+    console.log('Stream cleanup completed for process:', ffmpeg.pid);
   } catch (error) {
-    console.log('Stream cleanup completed with status:', error.message);
+    console.log('Stream cleanup completed with error:', error.message);
   }
 }
 
@@ -283,10 +385,27 @@ app.get('/proxy/stream', async (req, res) => {
     return;
   }
 
-  // Check if client already has an active stream
-  const existingStream = Array.from(activeStreams.values()).find(stream => stream.clientIP === clientIP);
-  if (existingStream && existingStream.ffmpeg) {
-    console.log(`Client ${clientIP} already has an active stream, cleaning up old stream`);
+  // Clean up any stale streams for this client
+  const staleStreams = Array.from(activeStreams.values())
+    .filter(stream => stream.clientIP === clientIP && 
+           (Date.now() - stream.lastActive > 30000 || // Stale after 30 seconds of inactivity
+            !stream.ffmpeg || 
+            stream.ffmpeg.killed));
+            
+  if (staleStreams.length > 0) {
+    console.log(`Found ${staleStreams.length} stale streams for client ${clientIP}, cleaning up`);
+    staleStreams.forEach(stream => {
+      cleanupStream(stream.ffmpeg);
+      activeStreams.delete(stream.id);
+    });
+  }
+
+  // Check for existing active stream for this URL from this client
+  const existingStream = Array.from(activeStreams.values())
+    .find(stream => stream.clientIP === clientIP && stream.url === url);
+
+  if (existingStream && existingStream.ffmpeg && !existingStream.ffmpeg.killed) {
+    console.log(`Client ${clientIP} already has an active stream for this URL, cleaning up old stream`);
     cleanupStream(existingStream.ffmpeg);
     activeStreams.delete(existingStream.id);
   }
@@ -297,21 +416,47 @@ app.get('/proxy/stream', async (req, res) => {
     clientIP,
     startTime: Date.now(),
     lastActive: Date.now(),
-    ffmpeg: null
+    ffmpeg: null,
+    isActive: true
   };
 
   // Add this stream to active streams
   activeStreams.set(streamId, currentStream);
 
+  // Set up keep-alive interval to update lastActive
+  const keepAliveInterval = setInterval(() => {
+    const stream = activeStreams.get(streamId);
+    if (stream) {
+      stream.lastActive = Date.now();
+      activeStreams.set(streamId, stream);
+    }
+  }, 5000);
+
   // Remove stream when finished
   res.on('close', () => {
     console.log(`Stream [${streamId}] closed by client ${clientIP}`);
+    clearInterval(keepAliveInterval);
+    
     const stream = activeStreams.get(streamId);
-    if (stream && stream.ffmpeg) {
-      cleanupStream(stream.ffmpeg);
+    if (stream) {
+      stream.isActive = false;
+      if (stream.ffmpeg) {
+        cleanupStream(stream.ffmpeg);
+      }
+      activeStreams.delete(streamId);
     }
-    activeStreams.delete(streamId);
+    
     console.log(`Active streams: ${activeStreams.size}`);
+    
+    // Clean up any other stale streams
+    const now = Date.now();
+    Array.from(activeStreams.values())
+      .filter(s => !s.isActive || now - s.lastActive > 30000)
+      .forEach(s => {
+        console.log(`Cleaning up stale stream [${s.id}]`);
+        if (s.ffmpeg) cleanupStream(s.ffmpeg);
+        activeStreams.delete(s.id);
+      });
   });
 
   try {
@@ -319,9 +464,20 @@ app.get('/proxy/stream', async (req, res) => {
     if (ffmpegProcess) {
       currentStream.ffmpeg = ffmpegProcess;
       activeStreams.set(streamId, currentStream);
+      
+      // Monitor ffmpeg process state
+      ffmpegProcess.on('exit', (code, signal) => {
+        console.log(`FFmpeg process [${streamId}] exited with code ${code} and signal ${signal}`);
+        const stream = activeStreams.get(streamId);
+        if (stream) {
+          stream.isActive = false;
+          activeStreams.delete(streamId);
+        }
+      });
     }
   } catch (error) {
     console.error(`Stream [${streamId}] processing error:`, error);
+    clearInterval(keepAliveInterval);
     const stream = activeStreams.get(streamId);
     if (stream && stream.ffmpeg) {
       cleanupStream(stream.ffmpeg);
