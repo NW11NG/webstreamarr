@@ -84,13 +84,17 @@ const processStream = async (url, headers, res) => {
     '-loglevel', 'warning',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
-    '-timeout', '10000000',
-    '-http_persistent', '0',        // Disable HTTP persistent connections
-    '-multiple_requests', '1',      // Allow multiple requests
-    '-rw_timeout', '10000000',     // Read/write timeout
-    '-analyzeduration', '15000000', // Increased analyze duration
-    '-probesize', '15000000'       // Increased probe size
+    '-reconnect_delay_max', '30',
+    '-timeout', '30000000',
+    '-http_persistent', '0',
+    '-multiple_requests', '1',
+    '-rw_timeout', '30000000',
+    '-analyzeduration', '5000000',
+    '-probesize', '5000000',
+    '-fflags', '+genpts+igndts+nobuffer',
+    '-flags', '+low_delay',
+    '-avioflags', 'direct',
+    '-protocol_whitelist', 'file,https,tls,tcp,crypto'
   ];
 
   // Add headers if provided
@@ -121,11 +125,9 @@ const processStream = async (url, headers, res) => {
     '-i', url,
     '-c', 'copy',
     '-f', 'mpegts',
-    '-fflags', '+genpts+igndts+discardcorrupt+nobuffer',  // Added nobuffer flag
-    '-flags', '+low_delay',        // Low delay flag
-    '-max_delay', '500000',        // Maximum demux-decode delay
-    '-max_interleave_delta', '0',  // Force minimal interleaving
-    '-fps_mode', 'cfr',           // Replaced deprecated vsync with fps_mode
+    '-max_delay', '500000',
+    '-max_interleave_delta', '0',
+    '-max_muxing_queue_size', '1024',
     'pipe:1'
   );
 
@@ -141,19 +143,26 @@ const processStream = async (url, headers, res) => {
 
   ffmpeg.stderr.on('data', (data) => {
     const message = data.toString();
-    console.error('FFmpeg error:', message);
-    errorMessage += message + '\n';
+    console.error('FFmpeg:', message);
+    errorMessage += message;
     
-    // Only treat certain errors as fatal, ignore SPS and probe size warnings
-    if (message.includes('Error') && 
+    if ((message.includes('Error') || message.includes('Invalid')) && 
         !message.includes('HTTP error') && 
         !message.includes('SPS') && 
         !message.includes('probesize') && 
+        !message.includes('Could not find codec parameters') &&
         !res.headersSent && 
         !hasError) {
       hasError = true;
-      res.status(500).send('Stream processing error: ' + errorMessage);
+      console.error('Fatal streaming error:', message);
+      res.status(500).send('Stream processing error: ' + message);
       cleanupStream(ffmpeg);
+    }
+  });
+
+  ffmpeg.stdout.on('data', (data) => {
+    if (!res.headersSent) {
+      console.log('First data received, length:', data.length);
     }
   });
 
