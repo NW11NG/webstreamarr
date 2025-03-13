@@ -1086,9 +1086,13 @@ app.post('/api/auto-detect', async (req, res) => {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-gpu'
+        '--disable-gpu',
+        '--load-extension=/usr/lib/chromium/extensions'
       ]
     });
+
+    // Wait a bit for uBlock to initialize
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const page = await browser.newPage();
     let m3uUrl = null;

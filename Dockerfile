@@ -27,8 +27,17 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     ca-certificates \
     curl \
+    unzip \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+# Download uBlock Origin
+RUN mkdir -p /usr/lib/chromium/extensions && \
+    wget -O /usr/lib/chromium/extensions/ublock.zip https://github.com/gorhill/uBlock/releases/download/1.55.0/uBlock0_1.55.0.chromium.zip && \
+    cd /usr/lib/chromium/extensions && \
+    unzip ublock.zip && \
+    rm ublock.zip && \
+    chown -R node:node /usr/lib/chromium/extensions
 
 # Create app directory
 WORKDIR /app
