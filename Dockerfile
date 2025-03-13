@@ -3,6 +3,7 @@ FROM node:18-slim
 # Install dependencies for Puppeteer and FFmpeg
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    chromium \
     fonts-liberation \
     libasound2 \
     libatk-bridge2.0-0 \
@@ -26,13 +27,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     ca-certificates \
     curl \
-    --no-install-recommends
-
-# Install Google Chrome
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list > /dev/null \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
@@ -41,9 +36,6 @@ WORKDIR /app
 # Install app dependencies
 COPY package*.json ./
 RUN npm install
-
-# Install Chrome for Puppeteer
-RUN npx puppeteer browsers install chrome
 
 # Bundle app source
 COPY . .
@@ -59,6 +51,10 @@ USER node
 # Set Node.js environment
 ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=2048"
+
+# Set Puppeteer configuration to use system Chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Expose port
 EXPOSE 34001

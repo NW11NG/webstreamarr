@@ -1081,8 +1081,7 @@ app.post('/api/auto-detect', async (req, res) => {
     console.log('Launching browser for URL:', url);
     browser = await puppeteer.launch({
       headless: 'new',
-      channel: 'chrome',
-      executablePath: '/usr/bin/google-chrome',
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',

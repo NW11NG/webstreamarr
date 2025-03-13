@@ -2,11 +2,8 @@ FROM node:18-slim
 
 # Install dependencies
 RUN apt-get update \
-    && apt-get install -y wget gnupg \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && apt-get install -y \
+        chromium \
         fonts-ipafont-gothic \
         fonts-wqy-zenhei \
         fonts-thai-tlwg \
@@ -72,6 +69,10 @@ COPY . .
 
 # Give necessary permissions to non-root user
 RUN chown -R pptruser:pptruser /app
+
+# Set Puppeteer configuration to use system Chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Run everything after as non-root user
 USER pptruser
