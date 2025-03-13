@@ -7,6 +7,19 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserAgents();
     setupFormHandlers();
     setupAutoDetectForm();
+
+    // Set a shorter timeout for the page load since we respond as soon as we find the M3U
+    const navigationTimeout = 30000; // 30 seconds
+    const pageTimeout = setTimeout(() => {
+        if (!hasResponded) {
+            hasResponded = true;
+            console.log('Page load timeout, closing browser');
+            if (browser) {
+                browser.close().catch(console.error);
+            }
+            res.status(408).json({ error: 'Timeout while searching for M3U URL' });
+        }
+    }, navigationTimeout);
 });
 
 function setupFormHandlers() {
@@ -466,6 +479,15 @@ document.body.insertAdjacentHTML('beforeend', `
                         <label class="block text-sm font-medium text-gray-700">M3U URL</label>
                         <input type="text" id="modal_m3u_url" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm" readonly>
                     </div>
+                    
+                    <!-- Dynamic URL Parameters Section -->
+                    <div id="url_parameters_section" class="hidden space-y-4">
+                        <h4 class="text-sm font-medium text-gray-700">URL Parameters</h4>
+                        <div id="url_parameters_fields" class="space-y-3">
+                            <!-- Dynamic parameter fields will be inserted here -->
+                        </div>
+                    </div>
+
                     <div>
                         <label class="block text-sm font-medium text-gray-700">User Agent</label>
                         <input type="text" id="modal_user_agent" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
@@ -591,12 +613,13 @@ function setupAutoDetectForm() {
             // Show the modal with the detected data
             showAutoDetectModal({
                 website_url: url,
-                m3u_url: data.m3uUrl,
+                m3uUrl: data.m3uUrl,
                 name: new URL(url).hostname.replace('www.', '').split('.')[0]
                     .split('-')
                     .map(word => word.charAt(0).toUpperCase() + word.slice(1))
                     .join(' '),
-                ...data.headers
+                headers: data.headers || {},
+                urlParams: data.m3u8Params || data.urlParams || {} // Include both possible parameter sources
             });
 
         } catch (error) {
@@ -612,28 +635,72 @@ function setupAutoDetectForm() {
 }
 
 function showAutoDetectModal(data) {
+    console.log('Showing modal with data:', data);
     const modal = document.getElementById('autoDetectModal');
     
     // Populate form fields
-    document.getElementById('modal_name').value = data.name;
-    document.getElementById('modal_website_url').value = data.website_url;
-    document.getElementById('modal_m3u_url').value = data.m3u_url;
-    document.getElementById('modal_user_agent').value = data.userAgent || '';
-    document.getElementById('modal_referer').value = data.referer || '';
-    document.getElementById('modal_origin').value = data.origin || '';
+    document.getElementById('modal_name').value = data.name || '';
+    document.getElementById('modal_website_url').value = data.website_url || '';
+    document.getElementById('modal_m3u_url').value = data.m3uUrl || data.m3u_url || '';
+    
+    // Clean up headers by removing any trailing semicolons
+    document.getElementById('modal_user_agent').value = (data.headers?.userAgent || '').replace(/;$/, '');
+    document.getElementById('modal_referer').value = (data.headers?.referer || '').replace(/;$/, '');
+    document.getElementById('modal_origin').value = (data.headers?.origin || '').replace(/;$/, '');
     document.getElementById('modal_update_days').value = 0;
     document.getElementById('modal_update_hours').value = 12;
 
     // Setup update interval handlers
     setupUpdateIntervalHandlers();
 
-    // Add HLS indicator if detected
+    // Handle URL parameters
+    const urlParamsSection = document.getElementById('url_parameters_section');
+    const urlParamsFields = document.getElementById('url_parameters_fields');
+    urlParamsFields.innerHTML = ''; // Clear existing fields
+
+    // Check for URL parameters in all possible locations
+    const urlParams = data.urlParams || {};
+    console.log('URL Parameters:', urlParams);
+    
+    if (Object.keys(urlParams).length > 0) {
+        urlParamsSection.classList.remove('hidden');
+        
+        // Create input fields for each parameter
+        Object.entries(urlParams).forEach(([key, value]) => {
+            const fieldDiv = document.createElement('div');
+            fieldDiv.className = 'flex items-center space-x-2';
+            fieldDiv.innerHTML = `
+                <div class="flex-1">
+                    <label class="block text-sm font-medium text-gray-700">${key}</label>
+                    <input type="text" 
+                           id="param_${key}"
+                           name="param_${key}"
+                           value="${value}"
+                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                           readonly>
+                </div>
+            `;
+            urlParamsFields.appendChild(fieldDiv);
+        });
+    } else {
+        urlParamsSection.classList.add('hidden');
+    }
+
+    // Add HLS indicator and URL parameters if detected
     const streamTypeIndicator = document.getElementById('stream_type_indicator');
+    const m3uUrl = data.m3uUrl || data.m3u_url || '';
     if (streamTypeIndicator) {
-        streamTypeIndicator.textContent = data.isHLS ? 'HLS Stream (.m3u8)' : 'M3U Stream';
-        streamTypeIndicator.className = data.isHLS ? 
-            'text-sm text-green-600 font-medium' : 
-            'text-sm text-blue-600 font-medium';
+        const isHLS = m3uUrl.endsWith('.m3u8');
+        let indicatorText = isHLS ? 'HLS Stream (.m3u8)' : 'M3U Stream';
+        
+        if (Object.keys(urlParams).length > 0) {
+            indicatorText += '\nURL Parameters Detected';
+        }
+        
+        streamTypeIndicator.textContent = indicatorText;
+        streamTypeIndicator.className = isHLS ? 
+            'text-sm text-green-600 font-medium whitespace-pre-line' : 
+            'text-sm text-blue-600 font-medium whitespace-pre-line';
     }
     
     // Show modal
@@ -647,6 +714,14 @@ function showAutoDetectModal(data) {
         const days = parseInt(document.getElementById('modal_update_days').value);
         const hours = parseInt(document.getElementById('modal_update_hours').value);
         
+        // Collect URL parameters
+        const collectedParams = {};
+        const paramInputs = urlParamsFields.querySelectorAll('input[id^="param_"]');
+        paramInputs.forEach(input => {
+            const paramName = input.id.replace('param_', '');
+            collectedParams[paramName] = input.value;
+        });
+        
         const channelData = {
             name: document.getElementById('modal_name').value,
             website_url: document.getElementById('modal_website_url').value,
@@ -657,7 +732,7 @@ function showAutoDetectModal(data) {
             origin: document.getElementById('modal_origin').value || null,
             auto_update_enabled: document.getElementById('modal_auto_update').checked,
             auto_update_interval: getTotalHours(days, hours),
-            is_hls: data.isHLS || false
+            url_params: Object.keys(collectedParams).length > 0 ? collectedParams : null
         };
 
         try {
@@ -704,7 +779,13 @@ async function updateChannelHeaders(channelId) {
             throw new Error('No website URL available for auto-update. Please edit the channel and add a website URL.');
         }
 
-        const response = await fetch(`${API_BASE_URL}/api/auto-detect`, {
+        console.log(`Starting auto-update for channel ${channel.name} (ID: ${channelId})`);
+        
+        // Use the mediaserver URL for auto-detect
+        const autoDetectUrl = `${window.location.protocol}//${window.location.hostname}:34001/api/auto-detect`;
+        console.log(`Using auto-detect URL: ${autoDetectUrl}`);
+        
+        const response = await fetch(autoDetectUrl, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -713,62 +794,129 @@ async function updateChannelHeaders(channelId) {
         });
 
         if (!response.ok) {
-            throw new Error('Failed to auto-detect headers');
+            const errorData = await response.json().catch(() => ({ error: 'Unknown error occurred' }));
+            throw new Error(errorData.error || `Auto-detect failed with status ${response.status}`);
         }
 
         const data = await response.json();
-        
-        // Update channel with new headers
+        console.log(`Received new data for channel ${channel.name}:`, data);
+
+        // Prepare update data, preserving existing values if new ones aren't found
+        const updateData = {
+            ...channel,
+            user_agent: data.headers?.userAgent || channel.user_agent,
+            referer: data.headers?.referer || channel.referer,
+            origin: data.headers?.origin || channel.origin,
+            last_update: new Date().toISOString()
+        };
+
+        // If we detected a new M3U URL, update it
+        if (data.m3uUrl) {
+            updateData.m3u_url = data.m3uUrl;
+        }
+
+        // If we detected new URL parameters, update them
+        if (data.m3u8Params && Object.keys(data.m3u8Params).length > 0) {
+            updateData.url_params = data.m3u8Params;
+        }
+
+        console.log(`Updating channel ${channel.name} with new data:`, updateData);
+
         const updateResponse = await fetch(`${API_BASE_URL}/api/channels/${channelId}`, {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-                ...channel,
-                user_agent: data.headers.userAgent || channel.user_agent,
-                referer: data.headers.referer || channel.referer,
-                origin: data.headers.origin || channel.origin,
-                last_update: new Date().toISOString()
-            })
+            body: JSON.stringify(updateData)
         });
 
         if (!updateResponse.ok) {
-            const errorData = await updateResponse.json();
+            const errorData = await updateResponse.json().catch(() => ({ error: 'Unknown error occurred' }));
             throw new Error(errorData.error || 'Failed to update channel');
         }
 
         // Reload the channels list to show updated data
         await loadChannels();
         
-        console.log(`Updated headers for channel ${channelId}`);
+        console.log(`Successfully updated channel ${channel.name} (ID: ${channelId})`);
+        return true;
     } catch (error) {
-        console.error(`Error updating headers for channel ${channelId}:`, error);
-        alert(`Failed to update headers: ${error.message}`);
+        console.error(`Error auto-updating channel ${channelId}:`, error);
+        // Don't show alert for auto-updates, only log to console
+        return false;
     }
 }
 
 // Start auto-update interval checker
-setInterval(async () => {
+let updateInProgress = false;
+let lastUpdateCheck = new Date(0);
+const MIN_CHECK_INTERVAL = 60000; // 1 minute
+const UPDATE_STAGGER_INTERVAL = 30000; // 30 seconds between updates
+
+async function checkAndUpdateChannels() {
+    const now = new Date();
+    
+    // Don't check too frequently
+    if (now - lastUpdateCheck < MIN_CHECK_INTERVAL) {
+        return;
+    }
+    
+    // Don't run multiple updates simultaneously
+    if (updateInProgress) {
+        return;
+    }
+    
     try {
+        updateInProgress = true;
+        lastUpdateCheck = now;
+        
         const response = await fetch(`${API_BASE_URL}/api/channels`);
         const channels = await response.json();
         
-        const now = new Date();
-        channels.forEach(channel => {
-            if (channel.auto_update_enabled) {
-                const lastUpdate = channel.last_update ? new Date(channel.last_update) : new Date(0);
-                const intervalMs = (channel.auto_update_interval || 12) * 3600000; // Convert hours to milliseconds
-                
-                if (now - lastUpdate >= intervalMs) {
-                    updateChannelHeaders(channel.id);
-                }
-            }
+        // Filter channels that need updating
+        const channelsToUpdate = channels.filter(channel => {
+            if (!channel.auto_update_enabled) return false;
+            
+            const lastUpdate = channel.last_update ? new Date(channel.last_update) : new Date(0);
+            const intervalMs = (channel.auto_update_interval || 12) * 3600000; // Convert hours to milliseconds
+            return now - lastUpdate >= intervalMs;
         });
+
+        // Sort by last update time (oldest first)
+        channelsToUpdate.sort((a, b) => {
+            const aTime = a.last_update ? new Date(a.last_update) : new Date(0);
+            const bTime = b.last_update ? new Date(b.last_update) : new Date(0);
+            return aTime - bTime;
+        });
+
+        // Update channels with staggering
+        for (let i = 0; i < channelsToUpdate.length; i++) {
+            const channel = channelsToUpdate[i];
+            console.log(`Scheduling update for channel ${channel.id}`);
+            
+            // Stagger updates
+            await new Promise(resolve => setTimeout(resolve, i * UPDATE_STAGGER_INTERVAL));
+            
+            try {
+                await updateChannelHeaders(channel.id);
+                console.log(`Successfully updated channel ${channel.id}`);
+            } catch (error) {
+                console.error(`Failed to update channel ${channel.id}:`, error);
+                // Continue with other updates even if one fails
+            }
+        }
     } catch (error) {
         console.error('Error checking for channels to update:', error);
+    } finally {
+        updateInProgress = false;
     }
-}, 60000); // Check every minute 
+}
+
+// Run the check every minute
+setInterval(checkAndUpdateChannels, MIN_CHECK_INTERVAL);
+
+// Initial check on page load
+checkAndUpdateChannels();
 
 // Add the redetectHeaders function
 async function redetectHeaders() {
@@ -798,21 +946,56 @@ async function redetectHeaders() {
         }
 
         const data = await response.json();
+        console.log('Auto-detect response:', data);
         
         // Update the form fields with new data
-        document.getElementById('modal_m3u_url').value = data.m3uUrl;
-        document.getElementById('modal_user_agent').value = data.headers.userAgent || '';
-        document.getElementById('modal_referer').value = data.headers.referer || '';
-        document.getElementById('modal_origin').value = data.headers.origin || '';
+        document.getElementById('modal_m3u_url').value = data.m3uUrl || '';
+        document.getElementById('modal_user_agent').value = (data.headers?.userAgent || '').replace(/;$/, '');
+        document.getElementById('modal_referer').value = (data.headers?.referer || '').replace(/;$/, '');
+        document.getElementById('modal_origin').value = (data.headers?.origin || '').replace(/;$/, '');
+
+        // Handle URL parameters
+        const urlParamsSection = document.getElementById('url_parameters_section');
+        const urlParamsFields = document.getElementById('url_parameters_fields');
+        urlParamsFields.innerHTML = ''; // Clear existing fields
+
+        // Check for URL parameters in all possible locations
+        const urlParams = data.urlParams || data.m3u8Params || {};
+        
+        if (Object.keys(urlParams).length > 0) {
+            urlParamsSection.classList.remove('hidden');
+            
+            // Create input fields for each parameter
+            Object.entries(urlParams).forEach(([key, value]) => {
+                const fieldDiv = document.createElement('div');
+                fieldDiv.className = 'flex items-center space-x-2';
+                fieldDiv.innerHTML = `
+                    <div class="flex-1">
+                        <label class="block text-sm font-medium text-gray-700">${key}</label>
+                        <input type="text" 
+                               id="param_${key}"
+                               name="param_${key}"
+                               value="${value}"
+                               class="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                               readonly>
+                    </div>
+                `;
+                urlParamsFields.appendChild(fieldDiv);
+            });
+        } else {
+            urlParamsSection.classList.add('hidden');
+        }
 
         // Update stream type indicator
         const streamTypeIndicator = document.getElementById('stream_type_indicator');
         if (streamTypeIndicator) {
-            const isHLS = data.m3uUrl.endsWith('.m3u8');
-            streamTypeIndicator.textContent = isHLS ? 'HLS Stream (.m3u8)' : 'M3U Stream';
+            const isHLS = data.m3uUrl && data.m3uUrl.endsWith('.m3u8');
+            let indicatorText = isHLS ? 'HLS Stream (.m3u8)' : 'M3U Stream';
+            
+            streamTypeIndicator.textContent = indicatorText;
             streamTypeIndicator.className = isHLS ? 
-                'text-sm text-green-600 font-medium' : 
-                'text-sm text-blue-600 font-medium';
+                'text-sm text-green-600 font-medium whitespace-pre-line' : 
+                'text-sm text-blue-600 font-medium whitespace-pre-line';
         }
 
         alert('Headers successfully updated!');

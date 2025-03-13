@@ -1065,6 +1065,17 @@ app.post('/api/auto-detect', async (req, res) => {
 
   let browser = null;
   let hasResponded = false;
+  let navigationTimeout = 30000; // 30 second timeout for navigation
+  let globalTimeout = setTimeout(() => {
+    if (!hasResponded) {
+      hasResponded = true;
+      console.log('Global timeout reached, closing browser');
+      if (browser) {
+        browser.close().catch(console.error);
+      }
+      res.status(408).json({ error: 'Timeout while searching for M3U URL' });
+    }
+  }, 45000); // 45 second global timeout
 
   try {
     console.log('Launching browser for URL:', url);
@@ -1088,6 +1099,10 @@ app.post('/api/auto-detect', async (req, res) => {
       origin: ''
     };
 
+    // Set default timeout for all operations
+    page.setDefaultTimeout(navigationTimeout);
+    page.setDefaultNavigationTimeout(navigationTimeout);
+
     // Enable request interception
     await page.setRequestInterception(true);
 
@@ -1098,6 +1113,7 @@ app.post('/api/auto-detect', async (req, res) => {
     page.on('request', request => {
       const resourceUrl = request.url();
       const requestHeaders = request.headers();
+      const resourceType = request.resourceType();
       
       // Clean header values - remove trailing semicolons and whitespace
       const cleanHeader = (header) => {
@@ -1117,11 +1133,26 @@ app.post('/api/auto-detect', async (req, res) => {
       // Clean URL before checking
       const cleanUrl = resourceUrl.replace(/[;\s]+$/, '');
 
-      if (cleanUrl.endsWith('.m3u') || cleanUrl.endsWith('.m3u8')) {
-        console.log('Found M3U URL:', cleanUrl);
+      // Check for M3U URLs in XHR/fetch requests or regular requests
+      if ((resourceType === 'xhr' || resourceType === 'fetch') && 
+          (cleanUrl.includes('.m3u8') || cleanUrl.includes('.m3u'))) {
+        console.log('Found M3U URL in XHR/fetch request:', cleanUrl);
+        console.log('Resource type:', resourceType);
         m3uUrl = cleanUrl;
         manifestHeaders = extractHeaders(requestHeaders);
         console.log('M3U headers:', manifestHeaders);
+
+        // Parse URL parameters if it's an M3U8 URL
+        let urlParams = null;
+        if (cleanUrl.includes('.m3u8?')) {
+          try {
+            const urlObj = new URL(cleanUrl);
+            urlParams = Object.fromEntries(urlObj.searchParams.entries());
+            console.log('Found M3U8 parameters:', urlParams);
+          } catch (e) {
+            console.error('Error parsing URL parameters:', e);
+          }
+        }
 
         // If we found what we need, respond immediately
         if (!hasResponded) {
@@ -1141,75 +1172,96 @@ app.post('/api/auto-detect', async (req, res) => {
           res.json({
             success: true,
             m3uUrl: finalM3uUrl,
-            headers: cleanedHeaders
+            headers: cleanedHeaders,
+            isHLS: finalM3uUrl.includes('.m3u8'),
+            urlParams: urlParams
           });
 
           // Close the browser since we're done
           if (browser) {
             browser.close().catch(console.error);
           }
+          clearTimeout(globalTimeout);
         }
       }
 
       request.continue();
     });
 
-    // Set a shorter timeout for the page load since we respond as soon as we find the M3U
-    const navigationTimeout = 15000; // 15 seconds
-    const pageTimeout = setTimeout(() => {
-      if (!hasResponded) {
-        hasResponded = true;
-        console.log('Page load timeout, closing browser');
-        if (browser) {
-          browser.close().catch(console.error);
+    try {
+      // Navigate to the page and wait for network idle
+      await page.goto(url, {
+        waitUntil: 'networkidle0',
+        timeout: navigationTimeout
+      }).catch(error => {
+        // Log but don't throw navigation errors if we already found the M3U URL
+        console.log('Navigation warning:', error.message);
+        if (!m3uUrl) {
+          throw error; // Only throw if we haven't found an M3U URL yet
         }
-        res.status(408).json({ error: 'Timeout while searching for M3U URL' });
-      }
-    }, navigationTimeout);
+      });
 
-    // Navigate to the page and wait for network idle
-    await page.goto(url, {
-      waitUntil: 'networkidle0',
-      timeout: navigationTimeout
-    });
-
-    clearTimeout(pageTimeout);
-
-    // Only respond if we haven't already
-    if (!hasResponded) {
-      hasResponded = true;
-      if (m3uUrl) {
-        // Clean URL and ensure no trailing semicolons
-        const finalM3uUrl = m3uUrl.replace(/[;\s]+$/, '');
-        const finalHeaders = manifestHeaders || headers;
-
-        // Remove any empty headers and ensure no trailing semicolons
-        const cleanedHeaders = {};
-        Object.entries(finalHeaders).forEach(([key, value]) => {
-          const cleanedValue = value?.replace(/[;\s]+$/, '').trim();
-          if (cleanedValue) {
-            cleanedHeaders[key] = cleanedValue;
+      // If we haven't found an M3U URL after navigation completes, check the page content
+      if (!hasResponded) {
+        try {
+          // Look for M3U URLs in page source
+          const content = await page.content();
+          const m3uMatches = content.match(/(https?:\/\/[^"'\s]+\.m3u8?)/gi);
+          
+          if (m3uMatches && m3uMatches.length > 0) {
+            m3uUrl = m3uMatches[0].replace(/[;\s]+$/, '');
+            console.log('Found M3U URL in page source:', m3uUrl);
+            
+            // Parse URL parameters if it's an M3U8 URL
+            let urlParams = null;
+            if (m3uUrl.includes('.m3u8?')) {
+              try {
+                const urlObj = new URL(m3uUrl);
+                urlParams = Object.fromEntries(urlObj.searchParams.entries());
+                console.log('Found M3U8 parameters in page source:', urlParams);
+              } catch (e) {
+                console.error('Error parsing URL parameters from page source:', e);
+              }
+            }
+            
+            if (!hasResponded) {
+              hasResponded = true;
+              res.json({
+                success: true,
+                m3uUrl: m3uUrl,
+                headers: headers,
+                isHLS: m3uUrl.includes('.m3u8'),
+                urlParams: urlParams
+              });
+            }
+          } else if (!hasResponded) {
+            hasResponded = true;
+            res.status(404).json({ error: 'No M3U URL found on the page' });
           }
-        });
-
-        res.json({
-          success: true,
-          m3uUrl: finalM3uUrl,
-          headers: cleanedHeaders
-        });
-      } else {
-        res.status(404).json({ error: 'No M3U URL found on the page' });
+        } catch (contentError) {
+          console.error('Error reading page content:', contentError);
+          if (!hasResponded) {
+            hasResponded = true;
+            res.status(500).json({ error: `Failed to read page content: ${contentError.message}` });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Navigation error:', error);
+      // Only respond with error if we haven't found an M3U URL yet
+      if (!hasResponded && !m3uUrl) {
+        hasResponded = true;
+        res.status(500).json({ error: `Failed to load page: ${error.message}` });
       }
     }
   } catch (error) {
-    // Only respond if we haven't already
+    console.error('Auto-detect error:', error);
     if (!hasResponded) {
       hasResponded = true;
-      console.error('Error auto-detecting M3U:', error);
-      res.status(500).json({ error: 'Failed to auto-detect M3U: ' + error.message });
+      res.status(500).json({ error: `Auto-detection failed: ${error.message}` });
     }
   } finally {
-    // Always try to close the browser
+    clearTimeout(globalTimeout);
     if (browser) {
       try {
         await browser.close();
