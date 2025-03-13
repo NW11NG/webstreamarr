@@ -31,9 +31,10 @@ docker build -t webstreamarr .
 
 2. Run the container:
 ```bash
-docker run -d -p 34001:34001 -v $(pwd)/channels.db:/app/channels.db webstreamarr
+
+Use compose which an example is provided
 ```
-(Preferably use compose which an example is provided)
+
 
 3. Access the web interface at `http://localhost:34001`
 
