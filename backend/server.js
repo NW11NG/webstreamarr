@@ -71,6 +71,32 @@ const getVPNStatus = async () => {
   }
 };
 
+// Add list of modern user agents
+const USER_AGENTS = [
+  // Windows Chrome
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  // Windows Firefox
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
+  // Windows Edge
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0',
+  // macOS Chrome
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+  // macOS Safari
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Safari/605.1.15'
+];
+
+// Function to get a random user agent
+function getRandomUserAgent() {
+  const randomIndex = Math.floor(Math.random() * USER_AGENTS.length);
+  return USER_AGENTS[randomIndex];
+}
+
 // Stream processing function
 const processStream = async (url, headers, res) => {
   console.log('Processing stream with headers:', headers);
@@ -359,24 +385,103 @@ app.get('/proxy/stream', async (req, res) => {
   });
 
   try {
+    // Use random user agent if none provided
+    const randomUserAgent = getRandomUserAgent();
     // Only use the essential headers with cleaned values
     const headers = {
-      'User-Agent': cleanHeader(userAgent) || 'Mozilla/5.0',
+      'User-Agent': cleanHeader(userAgent) || randomUserAgent,
       'Referer': cleanHeader(referer) || '',
       'Origin': cleanHeader(origin) || ''
     };
 
-    // Clean up empty headers
-    Object.keys(headers).forEach(key => {
-      if (!headers[key]) delete headers[key];
-    });
+    console.log('Using stream headers with random User-Agent:', headers);
+    
+    // Add failure counter
+    let failureCount = 0;
+    const MAX_RETRIES = 3;
+    
+    async function attemptStreamAccess(attemptHeaders) {
+      // Get a new random user agent for each attempt
+      const currentUserAgent = getRandomUserAgent();
+      const finalHeaders = {
+        ...attemptHeaders,
+        'User-Agent': currentUserAgent
+      };
+      
+      console.log(`Attempt ${failureCount + 1} using User-Agent: ${currentUserAgent}`);
+      
+      const response = await fetch(url, { headers: finalHeaders });
+      if (!response.ok) {
+        if (response.status === 403 && failureCount < MAX_RETRIES) {
+          failureCount++;
+          console.log(`403 error encountered for URL: ${url}, attempt ${failureCount} of ${MAX_RETRIES}`);
+          
+          // Get channel info from database using the URL
+          const channel = await new Promise((resolve, reject) => {
+            db.get('SELECT * FROM channels WHERE m3u_url = ?', [url], (err, row) => {
+              if (err) reject(err);
+              else resolve(row);
+            });
+          });
 
-    console.log('Using stream headers:', headers);
-    const response = await fetch(url, { headers });
+          if (channel && channel.website_url) {
+            // Use auto-detect to update headers
+            const result = await new Promise(async (resolve, reject) => {
+              const req = { body: { url: channel.website_url } };
+              const res = {
+                json: (data) => resolve(data),
+                status: (code) => ({
+                  json: (data) => reject(new Error(data.error || 'Auto-detect failed'))
+                })
+              };
+              await autoDetectHandler(req, res);
+            });
 
-    if (!response.ok) {
-      throw new Error(`Stream URL validation failed: ${response.status} ${response.statusText}`);
+            // Update channel with new headers
+            await new Promise((resolve, reject) => {
+              db.run(`UPDATE channels 
+                     SET user_agent = ?, 
+                         referer = ?, 
+                         origin = ?,
+                         last_update = DATETIME('now')
+                     WHERE id = ?`,
+                [
+                  result.headers.userAgent || channel.user_agent,
+                  result.headers.referer || channel.referer,
+                  result.headers.origin || channel.origin,
+                  channel.id
+                ],
+                (err) => {
+                  if (err) reject(err);
+                  else resolve();
+                });
+            });
+
+            console.log(`Channel ${channel.id} headers updated after 403 error (attempt ${failureCount})`);
+            
+            // Try the request again with new headers
+            const updatedHeaders = {
+              'User-Agent': result.headers.userAgent || attemptHeaders['User-Agent'],
+              'Referer': result.headers.referer || attemptHeaders['Referer'],
+              'Origin': result.headers.origin || attemptHeaders['Origin']
+            };
+            
+            // Recursive call with new headers
+            return attemptStreamAccess(updatedHeaders);
+          } else {
+            throw new Error(`Stream URL validation failed: ${response.status} ${response.statusText} (No channel found for auto-update)`);
+          }
+        } else if (response.status === 403) {
+          throw new Error(`Stream URL validation failed: Maximum retry attempts (${MAX_RETRIES}) reached`);
+        } else {
+          throw new Error(`Stream URL validation failed: ${response.status} ${response.statusText}`);
+        }
+      }
+      return response;
     }
+
+    // Initial attempt
+    await attemptStreamAccess(headers);
   } catch (error) {
     console.error('Stream validation error:', error);
     if (!res.headersSent) {
@@ -1055,6 +1160,89 @@ app.post('/api/channels/resequence', async (req, res) => {
     }
 });
 
+// Add force auto-update endpoint
+app.post('/api/channels/force-update', async (req, res) => {
+    try {
+        // Get all channels with auto-update enabled
+        const channels = await new Promise((resolve, reject) => {
+            db.all('SELECT * FROM channels WHERE auto_update_enabled = 1', [], (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        });
+
+        console.log(`Found ${channels.length} channels with auto-update enabled`);
+        let updateResults = [];
+
+        for (const channel of channels) {
+            try {
+                if (!channel.website_url) {
+                    updateResults.push({ id: channel.id, name: channel.name, status: 'skipped', message: 'No website URL configured' });
+                    continue;
+                }
+
+                console.log(`Force updating channel ${channel.id} (${channel.name})`);
+                
+                // Use direct auto-detect function
+                const result = await new Promise(async (resolve, reject) => {
+                    const req = { body: { url: channel.website_url } };
+                    const res = {
+                        json: (data) => resolve(data),
+                        status: (code) => ({
+                            json: (data) => reject(new Error(data.error || 'Auto-detect failed'))
+                        })
+                    };
+                    await autoDetectHandler(req, res);
+                });
+
+                // Update channel with new headers
+                await new Promise((resolve, reject) => {
+                    db.run(`UPDATE channels 
+                           SET user_agent = ?, 
+                               referer = ?, 
+                               origin = ?,
+                               last_update = DATETIME('now')
+                           WHERE id = ?`,
+                        [
+                            result.headers.userAgent || channel.user_agent,
+                            result.headers.referer || channel.referer,
+                            result.headers.origin || channel.origin,
+                            channel.id
+                        ],
+                        (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
+                });
+
+                updateResults.push({ 
+                    id: channel.id, 
+                    name: channel.name, 
+                    status: 'success',
+                    headers: result.headers
+                });
+                console.log(`Successfully updated headers for channel ${channel.id}`);
+            } catch (error) {
+                console.error(`Error updating channel ${channel.id}:`, error);
+                updateResults.push({ 
+                    id: channel.id, 
+                    name: channel.name, 
+                    status: 'error', 
+                    message: error.message 
+                });
+            }
+        }
+
+        res.json({
+            total: channels.length,
+            results: updateResults
+        });
+    } catch (error) {
+        console.error('Error in force update:', error);
+        res.status(500).json({ error: 'Failed to force update: ' + error.message });
+    }
+});
+
 // Auto-detect M3U URL and headers from a webpage
 app.post('/api/auto-detect', autoDetectHandler);
 
@@ -1197,9 +1385,15 @@ async function autoDetectHandler(req, res) {
         await new Promise(resolve => setTimeout(resolve, 1000));
 
         const page = await browser.newPage();
+        
+        // Set a random user agent
+        const randomUserAgent = getRandomUserAgent();
+        await page.setUserAgent(randomUserAgent);
+        console.log('Using random User-Agent for auto-detect:', randomUserAgent);
+        
         let m3uUrl = null;
         let headers = {
-          userAgent: await browser.userAgent(),
+          userAgent: randomUserAgent,
           referer: '',
           origin: ''
         };
