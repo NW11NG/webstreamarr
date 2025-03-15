@@ -117,9 +117,11 @@ const processStream = async (url, headers, res) => {
     '-rw_timeout', '30000000',
     '-analyzeduration', '5000000',
     '-probesize', '5000000',
-    '-fflags', '+genpts+igndts+flush_packets',
+    '-fflags', '+genpts+igndts+nobuffer+flush_packets',
     '-flags', '+low_delay',
     '-avioflags', 'direct',
+    '-vsync', 'cfr',              // Force CFR for better sync
+    '-async', '1',                // Audio sync method
     '-protocol_whitelist', 'file,https,tls,tcp,crypto'
   ];
 
@@ -149,31 +151,33 @@ const processStream = async (url, headers, res) => {
 
   ffmpegArgs.push(
     '-i', url,
-    // Video transcoding settings for maximum compatibility
-    '-c:v', 'libx264',        // Use H.264 codec
-    '-preset', 'veryfast',    // Fast encoding
-    '-tune', 'zerolatency',   // Minimize latency
-    '-profile:v', 'high',     // High quality profile
-    '-level', '4.1',          // Modern devices support this level
-    '-maxrate', '5000k',      // Increased maximum bitrate
-    '-bufsize', '10000k',     // Increased buffer size
-    '-crf', '18',            // Constant Rate Factor (18 is visually lossless)
-    '-pix_fmt', 'yuv420p',    // Most compatible pixel format
-    '-g', '60',               // Keyframe interval
-    '-sc_threshold', '0',     // Disable scene change detection
-    '-x264opts', 'rc-lookahead=60:ref=4', // Better quality settings
-    // Audio transcoding settings
-    '-c:a', 'aac',            // Use AAC codec
-    '-b:a', '192k',           // Higher audio bitrate
-    '-ar', '48000',           // Higher audio sample rate
-    '-ac', '2',               // Stereo audio
-    '-aac_coder', 'twoloop',  // Higher quality AAC encoding
+    // Video transcoding settings for better streaming stability
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',        // Changed from ultrafast for better quality/sync
+    '-tune', 'zerolatency',
+    '-profile:v', 'main',         // Changed to main profile for better quality
+    '-level', '3.1',
+    '-maxrate', '3000k',
+    '-bufsize', '6000k',
+    '-crf', '23',
+    '-pix_fmt', 'yuv420p',
+    '-g', '50',                   // Increased GOP size slightly
+    '-keyint_min', '50',          // Match GOP size
+    '-sc_threshold', '0',
+    // Encoding options for better sync
+    '-x264opts', 'no-scenecut:vbv-maxrate=3000:vbv-bufsize=6000:nal-hrd=cbr:force-cfr=1',
+    // Scale down video if needed
+    '-vf', 'scale=iw*min(1\\,min(1280/iw\\,720/ih)):ih*min(1\\,min(1280/iw\\,720/ih)),format=yuv420p',
+    // Audio transcoding settings with sync corrections
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-ar', '44100',
+    '-ac', '2',
+    '-af', 'aresample=async=1000',  // Help with audio sync
     // Output format settings
-    '-f', 'mpegts',           // Use MPEG-TS format
-    '-movflags', '+faststart',
-    '-max_delay', '500000',
-    '-max_interleave_delta', '0',
-    '-max_muxing_queue_size', '4096',
+    '-f', 'mpegts',
+    '-muxdelay', '0',
+    '-muxpreload', '0',
     'pipe:1'
   );
 
