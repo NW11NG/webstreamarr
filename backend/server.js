@@ -108,6 +108,7 @@ const processStream = async (url, headers, res) => {
 
   const ffmpegArgs = [
     '-loglevel', 'warning',
+    // Input options
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '30',
@@ -117,11 +118,6 @@ const processStream = async (url, headers, res) => {
     '-rw_timeout', '30000000',
     '-analyzeduration', '5000000',
     '-probesize', '5000000',
-    '-fflags', '+genpts+igndts+nobuffer+flush_packets',
-    '-flags', '+low_delay',
-    '-avioflags', 'direct',
-    '-vsync', 'cfr',              // Force CFR for better sync
-    '-async', '1',                // Audio sync method
     '-protocol_whitelist', 'file,https,tls,tcp,crypto'
   ];
 
@@ -149,31 +145,41 @@ const processStream = async (url, headers, res) => {
     ffmpegArgs.push('-headers', headerString + '\r\n');
   }
 
+  // Add input file
+  ffmpegArgs.push('-i', url);
+
+  // Output options
   ffmpegArgs.push(
-    '-i', url,
-    // Video transcoding settings for better streaming stability
+    // Processing flags
+    '-fflags', '+genpts+igndts+nobuffer+flush_packets',
+    '-flags', '+low_delay',
+    '-avioflags', 'direct',
+    '-fps_mode', 'cfr',              // Moved to output options
+    '-async', '1',                   // Audio sync method
+    // Video transcoding settings
     '-c:v', 'libx264',
-    '-preset', 'veryfast',        // Changed from ultrafast for better quality/sync
+    '-preset', 'fast',
     '-tune', 'zerolatency',
-    '-profile:v', 'main',         // Changed to main profile for better quality
-    '-level', '3.1',
-    '-maxrate', '3000k',
-    '-bufsize', '6000k',
-    '-crf', '23',
+    '-profile:v', 'high',
+    '-level', '4.1',
+    '-b:v', '6000k',         // Set constant video bitrate
+    '-minrate', '6000k',     // Ensure minimum bitrate matches target
+    '-maxrate', '6000k',     // Ensure maximum bitrate matches target
+    '-bufsize', '12000k',
     '-pix_fmt', 'yuv420p',
-    '-g', '50',                   // Increased GOP size slightly
-    '-keyint_min', '50',          // Match GOP size
+    '-g', '60',
+    '-keyint_min', '60',
     '-sc_threshold', '0',
-    // Encoding options for better sync
-    '-x264opts', 'no-scenecut:vbv-maxrate=3000:vbv-bufsize=6000:nal-hrd=cbr:force-cfr=1',
-    // Scale down video if needed
-    '-vf', 'scale=iw*min(1\\,min(1280/iw\\,720/ih)):ih*min(1\\,min(1280/iw\\,720/ih)),format=yuv420p',
-    // Audio transcoding settings with sync corrections
+    // Encoding options for proper CBR
+    '-x264opts', 'no-scenecut:nal-hrd=cbr:force-cfr=1',
+    // Scale settings for up to 1080p while maintaining aspect ratio
+    '-vf', 'scale=iw*min(1\\,min(1920/iw\\,1080/ih)):ih*min(1\\,min(1920/iw\\,1080/ih)),format=yuv420p',
+    // Audio transcoding settings
     '-c:a', 'aac',
-    '-b:a', '128k',
-    '-ar', '44100',
+    '-b:a', '192k',
+    '-ar', '48000',
     '-ac', '2',
-    '-af', 'aresample=async=1000',  // Help with audio sync
+    '-af', 'aresample=async=1000',
     // Output format settings
     '-f', 'mpegts',
     '-muxdelay', '0',
@@ -653,7 +659,10 @@ const db = new sqlite3.Database(dbFile, async (err) => {
                     auto_update_interval INTEGER DEFAULT 12,
                     last_update TEXT,
                     created_at TEXT,
-                    updated_at TEXT
+                    updated_at TEXT,
+                    retry_count INTEGER DEFAULT 0,
+                    last_retry_time TEXT,
+                    cooldown_until TEXT
                 )`, (err) => {
                     if (err) reject(err);
                     else resolve();
@@ -677,7 +686,10 @@ const db = new sqlite3.Database(dbFile, async (err) => {
                 'auto_update_interval': 'INTEGER DEFAULT 12',
                 'last_update': 'TEXT',
                 'created_at': 'TEXT',
-                'updated_at': 'TEXT'
+                'updated_at': 'TEXT',
+                'retry_count': 'INTEGER DEFAULT 0',
+                'last_retry_time': 'TEXT',
+                'cooldown_until': 'TEXT'
             };
 
             for (const [column, type] of Object.entries(requiredColumns)) {
@@ -1274,35 +1286,34 @@ async function startAutoUpdateChecker() {
     // Check every minute
     setInterval(async () => {
         try {
-            // Get all channels with auto-update enabled
+            // Get all channels with auto-update enabled that are not in cooldown
             const channels = await new Promise((resolve, reject) => {
-                db.all('SELECT * FROM channels WHERE auto_update_enabled = 1', [], (err, rows) => {
+                db.all(`SELECT * FROM channels 
+                       WHERE auto_update_enabled = 1 
+                       AND (cooldown_until IS NULL OR datetime(cooldown_until) <= datetime('now'))`, 
+                       [], (err, rows) => {
                     if (err) reject(err);
                     else resolve(rows);
                 });
             });
 
             const now = new Date();
-
+            
             for (const channel of channels) {
                 try {
                     // Skip if no website URL
-                    if (!channel.website_url) {
-                        console.log(`Channel ${channel.id} has no website URL for auto-update`);
-                        continue;
-                    }
+                    if (!channel.website_url) continue;
 
-                    // Calculate next update time
+                    // Check if it's time to update based on interval
                     const lastUpdate = channel.last_update ? new Date(channel.last_update) : new Date(0);
-                    const intervalMs = (channel.auto_update_interval || 12) * 3600000; // Convert hours to milliseconds
-                    const nextUpdate = new Date(lastUpdate.getTime() + intervalMs);
-
-                    // Check if it's time to update
-                    if (now >= nextUpdate) {
+                    const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
+                    
+                    if (hoursSinceUpdate >= channel.auto_update_interval) {
                         console.log(`Auto-updating channel ${channel.id} (${channel.name})`);
+                        console.log(`Launching browser for URL: ${channel.website_url}`);
                         
-                        // Use direct auto-detect function instead of HTTP request
                         try {
+                            // Use auto-detect to update headers
                             const result = await new Promise(async (resolve, reject) => {
                                 const req = { body: { url: channel.website_url } };
                                 const res = {
@@ -1314,13 +1325,16 @@ async function startAutoUpdateChecker() {
                                 await autoDetectHandler(req, res);
                             });
 
-                            // Update channel with new headers
+                            // Reset retry count on success
                             await new Promise((resolve, reject) => {
                                 db.run(`UPDATE channels 
                                        SET user_agent = ?, 
                                            referer = ?, 
                                            origin = ?,
-                                           last_update = DATETIME('now')
+                                           last_update = DATETIME('now'),
+                                           retry_count = 0,
+                                           last_retry_time = NULL,
+                                           cooldown_until = NULL
                                        WHERE id = ?`,
                                     [
                                         result.headers.userAgent || channel.user_agent,
@@ -1336,11 +1350,34 @@ async function startAutoUpdateChecker() {
 
                             console.log(`Successfully updated headers for channel ${channel.id}`);
                         } catch (error) {
-                            throw new Error(`Auto-detect failed: ${error.message}`);
+                            console.error(`Error auto-updating channel ${channel.id}:`, error);
+                            
+                            // Increment retry count and set cooldown if limit reached
+                            const newRetryCount = (channel.retry_count || 0) + 1;
+                            const cooldownDate = newRetryCount >= 5 ? 
+                                new Date(now.getTime() + (24 * 60 * 60 * 1000)) : // 24 hours from now
+                                null;
+                                
+                            await new Promise((resolve, reject) => {
+                                db.run(`UPDATE channels 
+                                       SET retry_count = ?,
+                                           last_retry_time = DATETIME('now'),
+                                           cooldown_until = ?
+                                       WHERE id = ?`,
+                                    [
+                                        newRetryCount,
+                                        cooldownDate ? cooldownDate.toISOString() : null,
+                                        channel.id
+                                    ],
+                                    (err) => {
+                                        if (err) reject(err);
+                                        else resolve();
+                                    });
+                            });
                         }
                     }
                 } catch (error) {
-                    console.error(`Error auto-updating channel ${channel.id}:`, error);
+                    console.error(`Error processing channel ${channel.id}:`, error);
                 }
             }
         } catch (error) {

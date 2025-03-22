@@ -336,12 +336,19 @@ function displayChannels(channels) {
                             </button>
                         </div>
                     </div>
-                    <div class="text-sm text-gray-500 truncate">${channel.m3u_url}</div>
-                    ${channel.auto_update_enabled ? `
-                        <div class="text-xs text-gray-400 mt-1">
-                            Updates every ${formatUpdateInterval(channel.auto_update_interval)} • Last update: ${lastUpdateText}
-                        </div>
-                    ` : ''}
+                    <div class="text-sm text-gray-500 truncate">
+                        <span class="font-medium">Last Update:</span> ${lastUpdateText}
+                        ${channel.auto_update_enabled ? 
+                            `<span class="ml-2 font-medium">Auto-Update:</span> Every ${channel.auto_update_interval}h` : 
+                            '<span class="ml-2 text-yellow-600">(Auto-Update Disabled)</span>'}
+                        ${channel.retry_count > 0 ? 
+                            `<span class="ml-2 text-red-600">Retries: ${channel.retry_count}/5</span>` : ''}
+                        ${channel.cooldown_until ? 
+                            `<span class="ml-2 text-orange-600">In Cooldown until ${new Date(channel.cooldown_until).toLocaleString()}</span>` : ''}
+                    </div>
+                    <div class="text-sm text-gray-500 truncate mt-1">
+                        ${channel.m3u_url}
+                    </div>
                 </div>
             </div>`;
 
